@@ -69,7 +69,7 @@
         'not-powered': player.powered == false,
       }"
       :style="{ width: width }"
-      @click="onSliderClick"
+      @mousedown="onMouseDown"
       @wheel.prevent="onWheel"
       @touchstart="onTouchStart"
       @touchmove="onTouchMove"
@@ -362,6 +362,11 @@ const touchMoveCount = ref(0);
 const maxMovement = ref(0);
 const isTouching = ref(false);
 
+// Mouse drag tracking
+const isMouseDragging = ref(false);
+const mouseStartX = ref(0);
+const mouseStartValue = ref(0);
+
 // Dragging state: blocks server sync only while actively dragging the slider
 const isDragging = ref(false);
 let dragEndTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -372,6 +377,8 @@ const SLIDER_UPDATE_DEBOUNCE_MS = 100;
 onUnmounted(() => {
   if (dragEndTimeout) clearTimeout(dragEndTimeout);
   if (sliderUpdateDebounceTimeout) clearTimeout(sliderUpdateDebounceTimeout);
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
 });
 
 const clamp = (value: number, min: number, max: number) =>
@@ -444,16 +451,6 @@ const vibrate = (duration: number = 10) => {
   }
 };
 
-const getPercentageFromX = (clientX: number): number => {
-  if (!sliderContainerRef.value) return displayValue.value;
-
-  const rect = sliderContainerRef.value.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const percentage = (x / rect.width) * 100;
-
-  return clamp(roundToStep(percentage), 0, 100);
-};
-
 // --- Touch handlers ---
 
 const onTouchStart = (event: TouchEvent) => {
@@ -502,7 +499,14 @@ const onTouchMove = (event: TouchEvent) => {
   if (isDrag.value) {
     event.preventDefault();
 
-    const newValue = getPercentageFromX(touch.clientX);
+    const rect = sliderContainerRef.value!.getBoundingClientRect();
+    const deltaX = touch.clientX - touchStartX.value;
+    const deltaPercent = (deltaX / rect.width) * 100 * 0.5;
+    const newValue = clamp(
+      roundToStep(touchStartValue.value + deltaPercent),
+      0,
+      100,
+    );
     const valueChanged = newValue !== displayValue.value;
 
     displayValue.value = newValue;
@@ -544,10 +548,13 @@ const onTouchEnd = (event: TouchEvent) => {
       }
     }
   } else {
-    // Drag end: send the final absolute value to the server
+    // Drag end: send final relative value to the server
     const touch = event.changedTouches[0];
+    const rect = sliderContainerRef.value!.getBoundingClientRect();
+    const deltaX = touch.clientX - touchStartX.value;
+    const deltaPercent = (deltaX / rect.width) * 100 * 0.5;
     const finalValue = clamp(
-      roundToStep(getPercentageFromX(touch.clientX)),
+      roundToStep(touchStartValue.value + deltaPercent),
       0,
       100,
     );
@@ -575,6 +582,60 @@ const onTouchCancel = () => {
     dragEndTimeout = null;
   }
   isTouching.value = false;
+};
+
+// --- Mouse drag handlers (relative, 50% speed) ---
+
+const onMouseMove = (event: MouseEvent) => {
+  if (!isMouseDragging.value || isSliderDisabled.value) return;
+  const rect = sliderContainerRef.value!.getBoundingClientRect();
+  const deltaX = event.clientX - mouseStartX.value;
+  const deltaPercent = (deltaX / rect.width) * 100 * 0.5;
+  const newValue = clamp(roundToStep(mouseStartValue.value + deltaPercent), 0, 100);
+  displayValue.value = newValue;
+  emit("update:local-value", newValue);
+};
+
+const onMouseUp = (event: MouseEvent) => {
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+
+  if (!isMouseDragging.value) return;
+  isMouseDragging.value = false;
+
+  const deltaX = event.clientX - mouseStartX.value;
+
+  if (Math.abs(deltaX) < 5) {
+    // Treat as click: toggle group popout if applicable
+    if (hasGroupPopout.value) {
+      toggleGroupPopout();
+    }
+  } else {
+    // Treat as drag: commit relative value
+    const rect = sliderContainerRef.value!.getBoundingClientRect();
+    const deltaPercent = (deltaX / rect.width) * 100 * 0.5;
+    const finalValue = clamp(roundToStep(mouseStartValue.value + deltaPercent), 0, 100);
+    displayValue.value = finalValue;
+    emit("update:local-value", finalValue);
+    setVolume(finalValue);
+  }
+
+  stopDragging();
+};
+
+const onMouseDown = (event: MouseEvent) => {
+  // Ignore clicks on the mute button or volume level display
+  if ((event.target as HTMLElement).closest(".volume-prepend, .volume-append")) return;
+  if (isSliderDisabled.value) return;
+
+  isMouseDragging.value = true;
+  mouseStartX.value = event.clientX;
+  mouseStartValue.value = displayValue.value;
+  startDragging();
+  event.preventDefault();
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
 };
 
 const onWheel = (event: WheelEvent) => {
@@ -613,15 +674,6 @@ const onSliderUpdate = (values: number[] | undefined) => {
   }, SLIDER_UPDATE_DEBOUNCE_MS);
 };
 
-// Desktop: click on slider area toggles popout for group players
-const onSliderClick = () => {
-  // Only toggle for group players; skip if touch-driven, mid-drag,
-  // or within 500ms of a touch-driven toggle (prevents synthesized click)
-  if (!hasGroupPopout.value || isTouching.value || isDragging.value) return;
-  if (Date.now() - lastPopoutToggleTime < 500) return;
-  toggleGroupPopout();
-};
-
 // Sync server volume to display when not actively dragging
 watch(
   currentVolume,
@@ -652,6 +704,7 @@ watch(
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
+  cursor: ew-resize;
 }
 
 .player-volume-container.disabled {
@@ -720,11 +773,10 @@ watch(
 
 /* --- Group volume popout styles are in the unscoped style block below --- */
 
-@media (pointer: coarse) {
-  .volume-slider,
-  .volume-slider :deep(*) {
-    pointer-events: none;
-  }
+/* Slider is purely visual — all pointer interaction is handled by the container */
+.volume-slider,
+.volume-slider :deep(*) {
+  pointer-events: none;
 }
 </style>
 
@@ -740,105 +792,4 @@ watch(
   background: transparent;
 }
 
-.group-popout {
-  background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-border-color), 0.12);
-  border-radius: 12px;
-  padding: 8px 18px 16px 18px;
-  box-shadow:
-    0 -4px 16px rgba(0, 0, 0, 0.15),
-    0 -1px 4px rgba(0, 0, 0, 0.08);
-  z-index: 10001;
-}
-
-.group-popout-row {
-  margin-bottom: 8px;
-}
-
-.group-popout-row:last-child {
-  margin-bottom: 0;
-}
-
-.group-popout-label {
-  font-size: 0.85rem;
-  font-weight: 500;
-  opacity: 0.85;
-  padding-left: 2px;
-  margin-bottom: -2px;
-}
-
-.group-popout-label-group {
-  font-weight: 600;
-  opacity: 1;
-}
-
-.group-popout-divider {
-  height: 1px;
-  background: rgba(var(--v-border-color), 0.15);
-  margin: 14px 0 10px 0;
-}
-
-/* Drag handle for swipe-down-to-dismiss (touch only) */
-.group-popout-drag-handle {
-  display: none;
-  justify-content: center;
-  align-items: center;
-  padding: 4px 0 10px 0;
-  cursor: grab;
-  touch-action: none;
-}
-
-@media (pointer: coarse) {
-  .group-popout-drag-handle {
-    display: flex;
-  }
-}
-
-.group-popout-drag-handle-pill {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(var(--v-border-color), 0.3);
-  transition: background 0.15s ease;
-}
-
-.group-popout-drag-handle:active .group-popout-drag-handle-pill {
-  background: rgba(var(--v-border-color), 0.5);
-}
-
-/* Popout animation */
-.popout-enter-active,
-.popout-leave-active {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-}
-
-.popout-enter-from,
-.popout-leave-to {
-  opacity: 0;
-  transform: translateY(8px);
-}
-
-.popout-enter-to,
-.popout-leave-from {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* Backdrop animation */
-.popout-backdrop-enter-active,
-.popout-backdrop-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.popout-backdrop-enter-from,
-.popout-backdrop-leave-to {
-  opacity: 0;
-}
-
-.popout-backdrop-enter-to,
-.popout-backdrop-leave-from {
-  opacity: 1;
-}
-</style>
+.gr
