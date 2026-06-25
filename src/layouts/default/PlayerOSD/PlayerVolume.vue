@@ -152,7 +152,7 @@ const props = withDefaults(defineProps<Props>(), {
   preferGroupVolume: false,
   enablePopout: true,
   width: "100%",
-  step: 2,
+  step: 1,
   allowWheel: false,
   color: "secondary",
   class: "",
@@ -445,10 +445,8 @@ const onMuteToggle = () => {
 
 // --- Helpers ---
 
-const vibrate = (duration: number = 10) => {
-  if (store.isTouchscreen && "vibrate" in navigator && navigator.vibrate) {
-    navigator.vibrate(duration);
-  }
+const vibrate = (_duration: number = 10) => {
+  // Vibration disabled
 };
 
 // --- Touch handlers ---
@@ -792,4 +790,105 @@ watch(
   background: transparent;
 }
 
-.gr
+.group-popout {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-border-color), 0.12);
+  border-radius: 12px;
+  padding: 8px 18px 16px 18px;
+  box-shadow:
+    0 -4px 16px rgba(0, 0, 0, 0.15),
+    0 -1px 4px rgba(0, 0, 0, 0.08);
+  z-index: 10001;
+}
+
+.group-popout-row {
+  margin-bottom: 8px;
+}
+
+.group-popout-row:last-child {
+  margin-bottom: 0;
+}
+
+.group-popout-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  opacity: 0.85;
+  padding-left: 2px;
+  margin-bottom: -2px;
+}
+
+.group-popout-label-group {
+  font-weight: 600;
+  opacity: 1;
+}
+
+.group-popout-divider {
+  height: 1px;
+  background: rgba(var(--v-border-color), 0.15);
+  margin: 14px 0 10px 0;
+}
+
+/* Drag handle for swipe-down-to-dismiss (touch only) */
+.group-popout-drag-handle {
+  display: none;
+  justify-content: center;
+  align-items: center;
+  padding: 4px 0 10px 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+@media (pointer: coarse) {
+  .group-popout-drag-handle {
+    display: flex;
+  }
+}
+
+.group-popout-drag-handle-pill {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(var(--v-border-color), 0.3);
+  transition: background 0.15s ease;
+}
+
+.group-popout-drag-handle:active .group-popout-drag-handle-pill {
+  background: rgba(var(--v-border-color), 0.5);
+}
+
+/* Popout animation */
+.popout-enter-active,
+.popout-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.popout-enter-from,
+.popout-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.popout-enter-to,
+.popout-leave-from {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Backdrop animation */
+.popout-backdrop-enter-active,
+.popout-backdrop-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.popout-backdrop-enter-from,
+.popout-backdrop-leave-to {
+  opacity: 0;
+}
+
+.popout-backdrop-enter-to,
+.popout-backdrop-leave-from {
+  opacity: 1;
+}
+</style>
