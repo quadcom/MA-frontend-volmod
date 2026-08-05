@@ -127,3 +127,6 @@ venv/*
 # nested git worktrees
 /.claude/worktrees
 /.worktrees
+
+# local scratch: pull request description, not part of the source tree
+/volmod-pr.md
