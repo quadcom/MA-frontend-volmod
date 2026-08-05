@@ -1,126 +1,107 @@
-# Music Assistant frontend (Vue PWA)
+# Music Assistant frontend — VolMod
 
-The Music Assistant frontend/panel is developed in Vue, development instructions below.
+A fork of the [Music Assistant frontend](https://github.com/music-assistant/frontend) that makes the
+behaviour of the player volume slider configurable.
 
-## Recommended IDE Setup
+Upstream ships a single, fixed volume interaction: tap or drag anywhere on the volume bar and the volume
+jumps to that position, in 2% increments, with haptic feedback on touch devices. That works well on a
+desktop with a mouse, but on a phone — where the volume bar is a thin strip inside the now-playing
+sheet — a slightly misplaced thumb can send a speaker from a background listening level to full volume
+in a single tap. There is currently no way to change this.
 
-[VSCode](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=johnsoncodehk.volar) (and disable Vetur) + [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=johnsoncodehk.vscode-typescript-vue-plugin).
+This fork does not replace that behaviour. It adds an alternative alongside it and exposes three
+independent settings so each user can pick the interaction that suits their devices.
 
-## Type Support for `.vue` Imports in TS
+## What it adds
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=johnsoncodehk.vscode-typescript-vue-plugin) to make the TypeScript language service aware of `.vue` types.
+Three new settings under **Settings → Frontend → Volume control**:
 
-If the standalone TypeScript plugin doesn't feel fast enough to you, Volar has also implemented a [Take Over Mode](https://github.com/johnsoncodehk/volar/discussions/471#discussioncomment-1361669) that is more performant. You can enable it by the following steps:
+| Setting                     | Options                                                 | Default  |
+| --------------------------- | ------------------------------------------------------- | -------- |
+| **Volume slider behaviour** | Absolute (jump to position) / Relative (drag to adjust) | Absolute |
+| **Volume step size**        | 1–10 %                                                  | 2 %      |
+| **Volume haptic feedback**  | On / Off                                                | On       |
 
-1. Disable the built-in TypeScript Extension
-   1. Run `Extensions: Show Built-in Extensions` from VSCode's command palette
-   2. Find `TypeScript and JavaScript Language Features`, right click and select `Disable (Workspace)`
-2. Reload the VSCode window by running `Developer: Reload Window` from the command palette.
+Every default reproduces current upstream behaviour exactly, so an existing install that never opens the
+settings page sees no change whatsoever.
 
-## Customize configuration
+### Volume slider behaviour
 
-See [Vite Configuration Reference](https://vitejs.dev/config/).
+- **Absolute** — unchanged upstream behaviour. The tap or drag position maps directly onto the 0–100
+  range, so the volume follows wherever you put your finger or pointer.
+- **Relative** — the volume adjusts by the _distance_ you drag, starting from the volume the drag began
+  at, at half the pointer's speed. Where you first touch the bar is irrelevant; only the movement counts.
+  This makes the bar behave like a jog control rather than a position control: a mistimed tap can no
+  longer jump the volume, and fine adjustments are practical even on a narrow mobile slider. Relative
+  mode also enables click-and-drag adjustment with a mouse, which reads as a natural extension of the
+  same gesture on desktop.
 
-## Project Setup
+In relative mode a short tap (under 5 px of travel) is still treated as a tap, so the group-player
+expand action on the volume row keeps working.
+
+### Volume step size
+
+Controls how many percent a single volume increment changes, from 1% to 10%. It applies uniformly to
+every way the slider can be adjusted: dragging, tapping, the scroll wheel, and keyboard arrow keys.
+Users driving sensitive amplifiers or line-level outputs generally want 1%; users on speakers with a
+coarse hardware volume curve often prefer larger increments. Upstream's fixed 2% is the default.
+
+### Volume haptic feedback
+
+Turns off the vibration that fires while dragging the volume slider. Upstream vibrates on touch-start
+and again on every step crossed, which some users find noisy — particularly in combination with a 1%
+step size, where a single drag can produce dozens of pulses. The toggle gates every vibration from the
+volume control at a single point and has no effect on devices without a vibration motor.
+
+## Why these are settings rather than a change in default
+
+Volume interaction is a matter of hardware and habit, not correctness. A mouse user on a wide desktop
+slider is well served by absolute positioning; a phone user reaching for a kitchen speaker is usually
+better served by relative dragging. The same is true of step granularity and haptics. Rather than
+trading one group's experience for another's, all three are exposed as preferences with upstream's
+current behaviour as the default.
+
+The three settings are also deliberately orthogonal — relative mode does not force a step size, and step
+size does not imply anything about haptics — so users can combine them freely instead of choosing between
+two bundled presets.
+
+## Implementation notes
+
+- The changes are confined to `src/layouts/default/PlayerOSD/PlayerVolume.vue`,
+  `src/views/settings/FrontendConfig.vue` and `src/translations/en.json`. No shared component,
+  composable or API surface is modified.
+- Settings are stored as **per-user server preferences**, not per-device `localStorage`, so a user's
+  volume preferences follow them across every browser and installed PWA signed in to the same account.
+  They are read through the existing `useUserPreferences()` composable as reactive computed refs.
+- Both interaction paths coexist in the component. In absolute mode every relative-mode handler returns
+  early and the stock slider is untouched, including its keyboard focus behaviour on desktop.
+- Preference values are sanitised at the point of use, since user preferences are free-form JSON
+  server-side.
+- The existing `step` prop on `PlayerVolume` still takes precedence over the preference when a caller
+  passes one explicitly.
+- New settings are surfaced through the existing frontend-owned config-entry mechanism, with
+  `en.json` labels, descriptions and option titles; other locales fall back to English until translated.
+
+## Upstream compatibility
+
+The fork tracks upstream directly:
+
+- `main` is a pristine mirror of `music-assistant/frontend`.
+- `volmod` carries the change as a single commit, rebased onto the released frontend tag that matches
+  the Music Assistant server version being run. Frontend and server are released in lockstep, so
+  building from the tag the server pins avoids version-skew between the UI and the API it calls.
+
+Type checking (`vue-tsc`), linting (`oxlint`, `eslint`), formatting (`prettier`) and the full unit test
+suite pass unmodified.
+
+## Building
+
+The build is unchanged from upstream:
 
 ```sh
-nvm use node
 pnpm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
-pnpm dev
-```
-
-This will launch an auto-reload development environment (usually at http://localhost:3000)
-Open the url in the browser and a popup will ask the location of the MA server.
-You can either connect to a locally launched dev server or an existing running server on port 8095.
-
-### Type-Check, Compile and Minify for Production
-
-```sh
 pnpm build
 ```
 
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-pnpm lint
-```
-
-## UI Framework
-
-This project is migrating from **Vuetify** to **[shadcn-vue](https://www.shadcn-vue.com/)** as its primary UI component library.
-
-## Development Guidelines
-
-### Components
-
-- **Size limit**: Keep components under 300–400 lines. If a component grows beyond this, split it into smaller, focused sub-components.
-- **Single responsibility**: Each component should do one thing well. Extract repeated logic or UI patterns into reusable components.
-- **Composition over complexity**: Prefer composing small components rather than building monolithic ones with many responsibilities.
-
-### UI Components
-
-- **Use shadcn-vue**: All new UI should use [shadcn-vue](https://www.shadcn-vue.com/) components located in `src/components/ui/`. Do not introduce new Vuetify components.
-- **Extend, don't override**: If a shadcn-vue component needs customization, extend it via props or slots rather than overriding styles globally.
-- **Avoid inline styles**: Use Tailwind utility classes for styling. Avoid `style=""` attributes except for dynamic values that cannot be expressed as classes.
-
-### TypeScript
-
-- **Always type props and emits**: Define explicit types for all component props and emits — avoid `any`.
-- **Prefer `interface` for object shapes**: Use `interface` for defining data shapes and `type` for unions/intersections.
-- **No implicit `any`**: Every function parameter and return value should be typed or clearly inferrable.
-
-### State & Composables
-
-- **Extract reusable logic into composables**: Any stateful logic shared between two or more components belongs in a `composable` under `src/composables/`.
-- **Keep `<script setup>` lean**: Heavy logic (data fetching, transformations) should live in composables, not inline in the component.
-
-### Helpers & Utilities
-
-- **Pure functions go in `src/helpers/`**: Any standalone utility function (e.g. string manipulation, date formatting, data transformation) must be placed in `src/helpers/` rather than inlined in a component or composable.
-- **One file per concern**: Group related helpers in a named file (e.g. `src/helpers/string.ts`, `src/helpers/date.ts`). Avoid a single catch-all `utils.ts`.
-- **Test every helper**: Each helper file must be covered by unit tests. For new helpers, add a corresponding test file colocated with the helper (e.g. `src/helpers/string.test.ts`). Existing tests under `tests/helpers/` may remain, but new tests should follow the colocated pattern. Helpers with no test coverage should not be merged.
-
-### API Calls & User Feedback
-
-- **Always show feedback on API calls**: Every API call must be wrapped with user feedback:
-  - On success: call `toast.success(...)` with a clear confirmation message.
-  - On failure: call `toast.error(...)` with a meaningful error message — never silently swallow errors.
-- **Example pattern**:
-  ```ts
-  try {
-    await api.doSomething()
-    toast.success("Action completed successfully")
-  } catch (e) {
-    toast.error("Failed to complete action")
-  }
-  ```
-- **Do not use `console.error` as a substitute** for user-facing feedback on API errors (or for meaningful calls).
-
-### General Best Practices
-
-- **No magic numbers/strings**: Extract constants with descriptive names.
-- **Meaningful naming**: Variables, functions, and components should clearly describe their purpose. Avoid abbreviations unless universally understood.
-- **Keep templates readable**: If a template expression is complex, move it to a computed property.
-- **Clean up side effects**: Always clean up event listeners and intervals in `onUnmounted`; manually created watchers outside component `setup` or manual effect scopes must also be cleaned up.
-- **Accessibility**: Use semantic HTML elements and provide `aria-*` attributes where appropriate.
-
----
-
-# Translation Management
-
-We use Lokalise to manage the translation files for the Music Assistant frontend
-
-[<img src="https://github.com/lokalise/i18n-ally/raw/screenshots/lokalise-logo.png?raw=true" alt="Lokalise logo" width="275px">](https://lokalise.com)
-
-### Contributing
-
-If you wish to assist in translating Music Assistant into a language that it currently does not support, please see here https://music-assistant.io/help/lokalise/.
-
----
-
-[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+`pnpm build` writes an importable Python package to `./music_assistant_frontend/`, which is what a
+Music Assistant server serves as its UI.
