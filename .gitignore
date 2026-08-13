@@ -130,3 +130,5 @@ venv/*
 
 # local scratch: pull request description, not part of the source tree
 /volmod-pr.md
+# local scratch: server-side handoff notes, not part of the source tree
+/volmod-server-handoff.md
