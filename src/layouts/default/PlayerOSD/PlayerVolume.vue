@@ -68,9 +68,11 @@
         disabled: isDisabled,
         muted: isMuted,
         'not-powered': player.powered == false,
+        'relative-mode': isRelativeMode,
       }"
       :style="{ width: width }"
       @click="onSliderClick"
+      @mousedown="onMouseDown"
       @pointerdown.capture="onPointerDown"
       @pointermove.capture="onPointerMove"
       @pointerup="onPointerUp"
@@ -120,6 +122,7 @@
 
 <script setup lang="ts">
 import { Slider } from "@/components/ui/slider";
+import { useUserPreferences } from "@/composables/userPreferences";
 import { getVolumeIconComponent, truncateString } from "@/helpers/utils";
 import { cn } from "@/lib/utils";
 import { api } from "@/plugins/api";
@@ -171,6 +174,20 @@ const emit = defineEmits<{
   (e: "update:local-value", value: number): void;
   (e: "toggle-group-expansion"): void;
 }>();
+
+// --- User preferences (Settings -> Frontend -> Volume control) ---
+
+const { getPreference } = useUserPreferences();
+
+// "absolute": the drag/tap position sets the volume. "relative": the drag
+// distance adjusts the volume from the value the drag started at.
+const volumeSliderMode = getPreference<string>(
+  "volume_slider_mode",
+  "absolute",
+);
+const isRelativeMode = computed(() => volumeSliderMode.value === "relative");
+
+const hapticsEnabled = getPreference<boolean>("volume_haptics", true);
 
 // --- Player-aware computed properties ---
 
@@ -411,6 +428,10 @@ const displayValue = ref(currentVolume.value);
 const touchStartX = ref(0);
 const touchStartY = ref(0);
 const touchStartValue = ref(0);
+// The position at which the gesture crossed the 8px mark and became a drag.
+// Relative adjustments are measured from here, so the travel spent recognising
+// the drag is not itself a volume change.
+const touchDragAnchorX = ref(0);
 const isScrolling = ref(false);
 const isDrag = ref(false);
 const touchMoveCount = ref(0);
@@ -424,13 +445,24 @@ let pointerStartX: number | null = null;
 let pointerStartValue = 0;
 let pointerMoved = false;
 
+// Mouse drag tracking (relative mode only)
+const isMouseDragging = ref(false);
+const mouseStartX = ref(0);
+const mouseStartValue = ref(0);
+
 let sliderUpdateDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 const SLIDER_UPDATE_DEBOUNCE_MS = 100;
 const POINTER_DRAG_THRESHOLD = 4;
 
+// Relative mode: the drag *distance* is applied to the value the drag started
+// from, at reduced speed so small adjustments are easier to land.
+const RELATIVE_DRAG_SENSITIVITY = 0.5;
+
 onUnmounted(() => {
   if (dragEndTimeout) clearTimeout(dragEndTimeout);
   if (sliderUpdateDebounceTimeout) clearTimeout(sliderUpdateDebounceTimeout);
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
 });
 
 const clamp = (value: number, min: number, max: number) =>
@@ -498,11 +530,13 @@ const onMuteToggle = () => {
 // --- Helpers ---
 
 const vibrate = (duration: number = 10) => {
+  if (!hapticsEnabled.value) return;
   if (store.isTouchscreen && "vibrate" in navigator && navigator.vibrate) {
     navigator.vibrate(duration);
   }
 };
 
+// Absolute mode: the pointer position maps directly onto the 0-100 range.
 const getPercentageFromX = (clientX: number): number => {
   if (!sliderContainerRef.value) return displayValue.value;
 
@@ -513,6 +547,23 @@ const getPercentageFromX = (clientX: number): number => {
   return clamp(roundToStep(percentage), 0, 100);
 };
 
+// Relative mode: deltaX is the travel since the gesture was recognised as a
+// drag, applied to the value it started from at reduced sensitivity.
+const getValueFromDelta = (startValue: number, deltaX: number): number => {
+  if (!sliderContainerRef.value) return displayValue.value;
+
+  const rect = sliderContainerRef.value.getBoundingClientRect();
+  const deltaPercent = (deltaX / rect.width) * 100 * RELATIVE_DRAG_SENSITIVITY;
+
+  return clamp(roundToStep(startValue + deltaPercent), 0, 100);
+};
+
+// Resolves a touch drag position through whichever mode is active.
+const getDragValue = (clientX: number): number =>
+  isRelativeMode.value
+    ? getValueFromDelta(touchStartValue.value, clientX - touchDragAnchorX.value)
+    : getPercentageFromX(clientX);
+
 // --- Touch handlers ---
 
 const onTouchStart = (event: TouchEvent) => {
@@ -522,6 +573,7 @@ const onTouchStart = (event: TouchEvent) => {
   const touch = event.touches[0];
   touchStartX.value = touch.clientX;
   touchStartY.value = touch.clientY;
+  touchDragAnchorX.value = touch.clientX;
   touchStartValue.value = displayValue.value;
   isScrolling.value = false;
   isDrag.value = false;
@@ -566,6 +618,7 @@ const onTouchMove = (event: TouchEvent) => {
 
     if (absDeltaX > 8) {
       isDrag.value = true;
+      touchDragAnchorX.value = touch.clientX;
       startDragging();
       event.preventDefault();
     }
@@ -574,7 +627,7 @@ const onTouchMove = (event: TouchEvent) => {
   if (isDrag.value) {
     event.preventDefault();
 
-    const newValue = getPercentageFromX(touch.clientX);
+    const newValue = getDragValue(touch.clientX);
     const valueChanged = newValue !== displayValue.value;
 
     displayValue.value = newValue;
@@ -621,13 +674,9 @@ const onTouchEnd = (event: TouchEvent) => {
       }
     }
   } else if (!isSliderDisabled.value) {
-    // Drag end: send the final absolute value to the server
+    // Drag end: send the final value to the server
     const touch = event.changedTouches[0];
-    const finalValue = clamp(
-      roundToStep(getPercentageFromX(touch.clientX)),
-      0,
-      100,
-    );
+    const finalValue = getDragValue(touch.clientX);
     displayValue.value = finalValue;
     emit("update:local-value", finalValue);
     setVolume(finalValue);
@@ -731,6 +780,73 @@ const onTouchCancel = () => {
   isTouching.value = false;
 };
 
+// --- Mouse drag handlers (relative mode only) ---
+//
+// In absolute mode the Slider owns mouse input and onPointerDown/onSliderClick
+// own the group tap, so every handler here bails out early. In relative mode
+// the slider has pointer-events disabled, which also makes the pointer
+// handlers inert (their targetsSlider check can never match).
+
+const MOUSE_DRAG_THRESHOLD_PX = 5;
+
+const onMouseMove = (event: MouseEvent) => {
+  if (!isMouseDragging.value || isSliderDisabled.value) return;
+
+  const newValue = getValueFromDelta(
+    mouseStartValue.value,
+    event.clientX - mouseStartX.value,
+  );
+
+  displayValue.value = newValue;
+  emit("update:local-value", newValue);
+};
+
+const onMouseUp = (event: MouseEvent) => {
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+
+  if (!isMouseDragging.value) return;
+  isMouseDragging.value = false;
+
+  const deltaX = event.clientX - mouseStartX.value;
+
+  if (Math.abs(deltaX) < MOUSE_DRAG_THRESHOLD_PX) {
+    // Too little travel to be a drag, so treat it as a click and run the group
+    // action instead of changing the volume.
+    if (handlesGroupTap.value) {
+      handleGroupTap();
+    }
+  } else {
+    const finalValue = getValueFromDelta(mouseStartValue.value, deltaX);
+    displayValue.value = finalValue;
+    emit("update:local-value", finalValue);
+    setVolume(finalValue);
+  }
+
+  stopDragging();
+};
+
+const onMouseDown = (event: MouseEvent) => {
+  if (!isRelativeMode.value) return;
+  if (isSliderDisabled.value) return;
+  // Leave the mute button and the volume readout to their own handlers
+  if (
+    (event.target as HTMLElement).closest(".volume-prepend, .volume-append")
+  ) {
+    return;
+  }
+
+  isMouseDragging.value = true;
+  mouseStartX.value = event.clientX;
+  mouseStartValue.value = displayValue.value;
+  startDragging();
+  // Suppress text selection while dragging
+  event.preventDefault();
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
+};
+
 const onWheel = (event: WheelEvent) => {
   // Only claim the wheel when it changes volume, so sliders inside a scrollable
   // container (the group popout) still scroll it
@@ -774,6 +890,8 @@ const onSliderUpdate = (values: number[] | undefined) => {
 
 // Desktop clicks use the same group action as touch taps.
 const onSliderClick = () => {
+  // In relative mode the mouseup handler owns this, so don't run it twice
+  if (isRelativeMode.value) return;
   if (!handlesGroupTap.value || isTouching.value || isDragging.value) return;
   if (Date.now() - lastPopoutToggleTime < 500) return;
   handleGroupTap();
@@ -877,11 +995,24 @@ watch(
 
 /* --- Group volume popout styles are in the unscoped style block below --- */
 
+/* Absolute mode on touch devices: the container owns the gesture, so the
+   slider itself must not swallow pointer events. Mouse input still reaches
+   the slider, which keeps click-to-position and keyboard control working. */
 @media (pointer: coarse) {
   .volume-slider,
   .volume-slider :deep(*) {
     pointer-events: none;
   }
+}
+
+/* Relative mode: the container owns pointer interaction on every device. */
+.player-volume-container.relative-mode {
+  cursor: ew-resize;
+}
+
+.player-volume-container.relative-mode .volume-slider,
+.player-volume-container.relative-mode .volume-slider :deep(*) {
+  pointer-events: none;
 }
 </style>
 

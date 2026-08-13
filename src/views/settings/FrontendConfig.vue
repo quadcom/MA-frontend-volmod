@@ -69,6 +69,22 @@ const loading = ref(false);
 // makes an advanced entry reachable the moment one is added
 const showAdvancedSettings = ref(false);
 
+// Per-user preferences whose consumers read them as computed refs, so saving one
+// takes effect immediately and the page reload below would achieve nothing.
+const RELOAD_EXEMPT_PREFERENCE_KEYS = new Set([
+  "volume_slider_mode",
+  "volume_haptics",
+]);
+
+// The form submits every entry, not just the edited ones, so the values a save
+// receives are compared against these to tell an actual change from a re-save.
+// Without that, any save would look like a change to every per-user preference.
+const initialValues = ref<Record<string, ConfigValueType | undefined>>({});
+
+const valueChanged = (key: string, value: ConfigValueType): boolean =>
+  JSON.stringify(value ?? null) !==
+  JSON.stringify(initialValues.value[key] ?? null);
+
 onMounted(() => {
   // TODO: Remove localStorage fallbacks below once migration period is over
   // (theme and language moved from localStorage to user preferences)
@@ -177,6 +193,34 @@ onMounted(() => {
       category: "display_settings",
       value: readDeviceSetting(MOBILE_SIDEBAR_SIDE) || "left",
     },
+    {
+      key: "volume_slider_mode",
+      type: ConfigEntryType.STRING,
+      label: "volume_slider_mode",
+      default_value: "absolute",
+      required: false,
+      options: [
+        { title: "absolute", value: "absolute" },
+        { title: "relative", value: "relative" },
+      ],
+      multi_value: false,
+      category: "volume_control",
+      value:
+        (store.currentUser?.preferences?.volume_slider_mode as string) ||
+        "absolute",
+    },
+    {
+      key: "volume_haptics",
+      type: ConfigEntryType.BOOLEAN,
+      label: "volume_haptics",
+      default_value: true,
+      required: false,
+      options: [],
+      multi_value: false,
+      category: "volume_control",
+      value:
+        (store.currentUser?.preferences?.volume_haptics as boolean) ?? true,
+    },
   ];
 
   // Add web player settings (if not running in companion mode)
@@ -221,6 +265,10 @@ onMounted(() => {
     }));
   }
   config.value = configEntries;
+  // Snapshot before the form can mutate entry.value in place on edit.
+  initialValues.value = Object.fromEntries(
+    configEntries.map((entry) => [entry.key, entry.value]),
+  );
 });
 
 // methods
@@ -248,7 +296,12 @@ const saveValues = async function (values: Record<string, ConfigValueType>) {
       } else {
         // Save to backend via user preferences
         await setPreference(key, values[key]);
-        hasPerUserChanges = true;
+        if (
+          !RELOAD_EXEMPT_PREFERENCE_KEYS.has(key) &&
+          valueChanged(key, values[key])
+        ) {
+          hasPerUserChanges = true;
+        }
       }
     }
 
